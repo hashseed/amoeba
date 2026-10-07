@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f3eee4" />
+    <title>Amoeba</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath d='M32 6c12 0 26 8 24 22s4 26-12 30-30 0-34-14S20 6 32 6z' fill='%23f4d6e0' stroke='%23b88aa0' stroke-width='3'/%3E%3Ccircle cx='30' cy='30' r='8' fill='%23e8c3d2' stroke='%23a07890' stroke-width='2'/%3E%3C/svg%3E" />
+    <style>
+      html, body { margin: 0; height: 100%; background: #f3eee4; overflow: hidden; }
+      canvas { display: block; width: 100vw; height: 100vh; }
+      body.idle { cursor: none; }
+      #fallback { display: none; position: fixed; inset: 0; place-items: center; font: 16px/1.5 system-ui, sans-serif; color: #6b5d55; text-align: center; padding: 16px; }
+      body.no-webgl #fallback { display: grid; }
+    </style>
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+    <div id="fallback">This drop of water needs WebGL2, which your browser doesn't provide.</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
