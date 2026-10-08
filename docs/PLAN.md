@@ -83,6 +83,6 @@ amoeba/
 
 1. Scaffold, Pages deploy pipeline, one beautifully rendered soft-body amoeba wobbling on screen.
 2. Ecosystem core: energy, eating, growth, mitosis, death, nutrient loop, with two species.
-3. Remaining species and the full visual pass (depth layers, post-processing).
+3. Remaining species and the full visual pass (focus drift, post-processing).
 4. Screensaver polish: wake lock, settings, adaptive quality, long-run balance tuning.
 5. Interaction: mouse stirs the water.

@@ -187,6 +187,13 @@ export class Amoeba {
     area *= Math.PI / NODES;
     const targetArea = Math.PI * R * R;
     const pressure = ((targetArea - area) / targetArea) * R * 1.5;
+    // Excess area (from a growing pseudopod) is drawn mostly from the rear, as
+    // the trailing uroid retracts; a deficit inflates the cell evenly.
+    const hx = Math.cos(this.heading);
+    const hy = Math.sin(this.heading);
+    let weightSum = 0;
+    for (let i = 0; i < NODES; i++) weightSum += this.retractWeight(i, hx, hy);
+    const weightNorm = NODES / weightSum;
 
     for (let i = 0; i < NODES; i++) {
       const r0 = rs[(i + NODES - 2) % NODES];
@@ -196,8 +203,10 @@ export class Amoeba {
       const r4 = rs[(i + 2) % NODES];
       // Second- and fourth-order smoothing: rounds tips without flattening lobes.
       let d = (r1 + r3 - 2 * r2) * 0.5 - (r0 - 4 * r1 + 6 * r2 - 4 * r3 + r4) * 0.1;
-      d += pressure;
       const ang = (i / NODES) * TAU;
+      d += pressure > 0 ? pressure : pressure * this.retractWeight(i, hx, hy) * weightNorm;
+      // The body stays plump: the membrane resists being pulled in past ~0.8 R.
+      if (r2 < R * 0.8) d += (R * 0.8 - r2) * 1.2;
       // Slow low-frequency undulation so the outline is never a perfect circle.
       for (let k = 2; k <= 4; k++) d += R * 0.025 * Math.sin(k * ang + noise1(this.time * 0.05, this.seed + k) * 6);
       for (const p of this.pods) {
@@ -209,6 +218,13 @@ export class Amoeba {
       dr[i] = d;
     }
     for (let i = 0; i < NODES; i++) rs[i] = Math.max(R * 0.3, rs[i] + dr[i] * dt);
+  }
+
+  /** How strongly node i gives up area: small at the leading edge, large at the rear. */
+  private retractWeight(i: number, hx: number, hy: number): number {
+    const ang = (i / NODES) * TAU;
+    const back = -(Math.cos(ang) * hx + Math.sin(ang) * hy);
+    return 0.25 + Math.max(0, back) * 1.75;
   }
 
   /** The centre flows toward active pseudopods; the membrane stays where it is. */
