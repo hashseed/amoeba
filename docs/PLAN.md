@@ -37,8 +37,8 @@ Later candidates: Volvox colonies, Stentor, bioluminescent dinoflagellates that 
 
 - **Physics:** each cell is a ring of verlet points with edge springs plus an internal pressure term that preserves area, so cells squish against each other and wobble. Low Reynolds number: velocity follows force with heavy drag, no coasting, which also reads as "slow and calm".
 - **Energy:** every organism has mass and energy. Metabolism costs scale with mass; eating or photosynthesis adds it. Growth converts surplus energy into mass (cell area grows).
-- **Predation:** a predator can engulf prey at least about 1.4x smaller. Engulfing is animated: membrane wraps around the prey, prey sits in a food vacuole, slowly fades and shrinks while the predator gains mass.
-- **Mitosis:** past a size threshold the nucleus elongates and splits, the membrane pinches at the equator (a constriction force on the soft body), and two daughters drift apart with slight random variation.
+- **Predation (phagocytosis):** a predator can engulf prey at least about 1.4x smaller. The membrane never crosses the prey: pseudopods form a cup, flow around it and close behind it, sealing it in a pocket of water (the food vacuole). The prey stays visible, twitching at first; the vacuole tightens while the prey shrinks, browns and fades, and the residue drifts to the rear and is expelled as debris.
+- **Binary fission:** past a size threshold the cell retracts its pseudopods and rounds up; the nucleus goes through mitosis (chromatin condenses, lines up on a plate, is pulled to the poles, two nuclei re-form and pinch apart); the other organelles duplicate and gather at the poles; only then does the body pinch at the waist into two daughters.
 - **Death and recycling:** cells that run out of energy dissolve into detritus on a low-res nutrient grid, which feeds bacteria and closes the loop.
 - **Balance:** soft population caps per species and gentle respawning from the edges so the scene never collapses or empties, which matters for a screensaver that runs for hours. A `?seed=` URL param makes scenes reproducible.
 

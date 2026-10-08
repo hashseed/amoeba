@@ -7,7 +7,8 @@ layout(location = 2) in vec4 a_body;   // rgb, blur
 layout(location = 3) in vec4 a_ink;    // rgb, contrast
 layout(location = 4) in vec4 a_glow;   // rgb, seed
 layout(location = 5) in vec4 a_meta;   // data row, organelle count, centroid
-layout(location = 6) in vec4 a_extra;  // radius, unused
+layout(location = 6) in vec4 a_extra;  // radius, wall, digestion, unused
+layout(location = 7) in vec4 a_pocket; // centre, radius of a pocket of water inside the cell
 
 out vec2 v_p;
 flat out vec4 v_body;
@@ -15,6 +16,7 @@ flat out vec4 v_ink;
 flat out vec4 v_glow;
 flat out vec4 v_meta;
 flat out vec4 v_extra;
+flat out vec4 v_pocket;
 
 void main() {
   vec2 t = a_corner * 0.5 + 0.5;
@@ -25,5 +27,6 @@ void main() {
   v_glow = a_glow;
   v_meta = a_meta;
   v_extra = a_extra;
+  v_pocket = a_pocket;
   gl_Position = vec4(p.x / u_res.x * 2.0 - 1.0, 1.0 - p.y / u_res.y * 2.0, 0.0, 1.0);
 }

@@ -22,6 +22,15 @@ const BIRTH_SIZE: Record<Species, number> = {
 };
 /** Nutrient level the water drifts back toward, per grid cell (mass units). */
 const NUTRIENT_FLOOR = 900;
+/** Box modes of the water current: wave numbers, how fast each swings, and its phase. */
+const CURRENT_MODES = [
+  { m: 1, n: 1, speed: 0.011, phase: 0.3 },
+  { m: 2, n: 1, speed: 0.017, phase: 2.1 },
+  { m: 1, n: 2, speed: 0.013, phase: 4.0 },
+  { m: 2, n: 2, speed: 0.023, phase: 1.2 },
+  { m: 3, n: 2, speed: 0.019, phase: 5.1 },
+  { m: 2, n: 3, speed: 0.029, phase: 3.3 },
+];
 
 export class World {
   readonly rng: Rng;
@@ -32,6 +41,8 @@ export class World {
   time = 0;
   /** Current depth of the focal plane, drifts slowly. */
   focus = 0;
+  /** Render everything in focus (debugging aid). */
+  sharp = false;
   readonly nutrients: Nutrients;
   private readonly unit: number;
   private readonly caps: Record<Species, number>;
@@ -49,7 +60,7 @@ export class World {
     const area = (width * height) / (this.unit * this.unit);
     this.caps = {
       // Amoebae are limited by food rather than space; the cap only bounds the cost.
-      [Species.Amoeba]: Math.round(clamp(5 * area, 4, 8)),
+      [Species.Amoeba]: Math.round(clamp(3.5 * area, 3, 6)),
       [Species.Alga]: Math.round(30 * area),
     };
     this.baseSpecks = Math.round(45 * area);
@@ -139,7 +150,10 @@ export class World {
     this.focus = 0.35 * Math.sin(t * 0.021) + 0.15 * Math.sin(t * 0.053 + 1.3);
 
     const ctx = { rng: this.rng, bounds: { w: this.width, h: this.height }, nutrients: this.nutrients };
-    for (const c of this.cells) c.step(dt, ctx);
+    for (const c of this.cells) {
+      c.step(dt, ctx);
+      if (c.expelled.length) this.egest(c);
+    }
     this.nutrients.step(dt, NUTRIENT_FLOOR);
     // Passive drifters ride the slow currents in the drop, which keeps algal
     // blooms from settling into one corner.
@@ -183,16 +197,18 @@ export class World {
 
   /** A cell that is well fed, or still digesting a meal, doesn't hunt. */
   private hungry(a: Cell): boolean {
-    if (a.energy > a.mass * a.traits.reserve * 2.2) return false;
+    // A full-grown cell that has no room to divide only eats to stay alive.
+    const fullGrown = a.radius >= a.birthRadius * a.traits.divideAt;
+    if (a.energy > a.mass * a.traits.reserve * (fullGrown ? 0.7 : 2.2)) return false;
     let digesting = 0;
     for (const o of a.organelles) if (o.kind === OrganelleKind.FoodVacuole) digesting += o.content;
-    return digesting < a.mass * 0.1;
+    return digesting < a.mass * 0.18;
   }
 
   private choosePrey(a: Cell): Cell | null {
     let best: Cell | null = null;
     let bestScore = Infinity;
-    const sense = a.radius * 2.6;
+    const sense = a.radius * 2;
     for (const c of this.cells) {
       if (c === a || c.state !== CellState.Alive || c.capturedBy) continue;
       // Algae are always fair game; other amoebae only when much smaller.
@@ -233,6 +249,13 @@ export class World {
       const c = this.cells[i];
       if (c.state !== CellState.Gone) continue;
       this.cells.splice(i, 1);
+      // Whatever was still being digested inside goes with it.
+      for (const o of c.organelles) {
+        if (o.cell && o.cell.capturedBy === c) {
+          o.cell.state = CellState.Gone;
+          o.cell.capturedBy = null;
+        }
+      }
       if (c.visibility < 0.5) {
         this.decompose(c);
         this.stats.deaths++;
@@ -241,6 +264,30 @@ export class World {
       }
     }
     this.cells.push(...born);
+  }
+
+  /** Residue pushed out of a cell becomes a speck of debris and slowly feeds the water. */
+  private egest(c: Cell): void {
+    for (const e of c.expelled) {
+      this.nutrients.add(e.x, e.y, e.mass);
+      this.specks.push({
+        x: e.x,
+        y: e.y,
+        z: c.z,
+        r: Math.max(e.r, this.unit * 0.002),
+        vx: Math.cos(c.heading + Math.PI) * 2,
+        vy: Math.sin(c.heading + Math.PI) * 2,
+        shade: 0.9,
+      });
+    }
+    c.expelled.length = 0;
+    this.trimSpecks();
+  }
+
+  private trimSpecks(): void {
+    // Old debris settles out of view so it never piles up.
+    const max = Math.round(this.baseSpecks * 1.5);
+    if (this.specks.length > max) this.specks.splice(0, this.specks.length - max);
   }
 
   /** A dead cell returns its matter to the water and leaves a little debris. */
@@ -261,8 +308,7 @@ export class World {
         shade: rng.range(0.4, 1),
       });
     }
-    // Old debris settles out of view so it never piles up.
-    if (this.specks.length > this.baseSpecks * 1.5) this.specks.splice(0, this.specks.length - this.baseSpecks * 1.5);
+    this.trimSpecks();
   }
 
   /** Keep the drop from ever emptying: newcomers drift in when a species runs low. */
@@ -275,22 +321,30 @@ export class World {
   }
 
   /**
-   * A slow, divergence-free current: two large counter-rotating eddies whose
-   * centres wander over minutes. Derived from a stream function, so it never
-   * piles things up in one place.
+   * A slow, divergence-free current that never runs into the edges of the drop.
+   * It is a sum of a few box modes of a stream function, ψ = Σ aₖ(t)·sin(mπx/W)·sin(nπy/H),
+   * which is zero along every edge, so water only ever flows along the walls,
+   * never into them. Each mode's strength swings slowly between positive and
+   * negative, so eddies grow, fade and reverse over minutes and nothing settles
+   * in one place for long.
    */
   current(x: number, y: number): { x: number; y: number } {
     const t = this.time;
-    const kx = (Math.PI * 1.3) / this.width;
-    const ky = (Math.PI * 1.3) / this.height;
-    const px = kx * x + 0.7 * Math.sin(t * 0.004) + t * 0.0025;
-    const py = ky * y + 0.7 * Math.cos(t * 0.0031);
-    const amp = this.unit * 0.012;
-    // ψ = amp/k · sin(px) · sin(py);  u = ∂ψ/∂y, v = -∂ψ/∂x
-    return {
-      x: amp * Math.sin(px) * Math.cos(py),
-      y: -amp * Math.cos(px) * Math.sin(py) * (kx / ky),
-    };
+    const W = this.width;
+    const H = this.height;
+    const amp = this.unit * 0.016;
+    let u = 0;
+    let v = 0;
+    for (const m of CURRENT_MODES) {
+      const a = amp * Math.sin(t * m.speed + m.phase);
+      const kx = (m.m * Math.PI) / W;
+      const ky = (m.n * Math.PI) / H;
+      // Normalised so every mode moves water at about the same peak speed.
+      const c = a / Math.hypot(kx, ky);
+      u += c * ky * Math.sin(kx * x) * Math.cos(ky * y);
+      v -= c * kx * Math.cos(kx * x) * Math.sin(ky * y);
+    }
+    return { x: u, y: v };
   }
 
   private driftSpecks(dt: number): void {
@@ -368,6 +422,7 @@ export class World {
 
   /** Defocus blur radius (world px) for something at depth z. */
   blurAt(z: number): number {
+    if (this.sharp) return 0;
     const dz = Math.abs(z - this.focus);
     return this.unit * 0.0045 * Math.pow(dz, 1.3);
   }

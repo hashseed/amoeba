@@ -22,13 +22,29 @@ export interface Organelle {
   r: number;
   /** Radius as a fraction of the cell radius. */
   size: number;
+  /** 0..1, grows in after being duplicated during division. */
+  grow: number;
   /** Free-running phase for pulsing and wobble. */
   phase: number;
-  /** Fixed orientation, radians (used by chloroplasts). */
+  /** Fixed orientation, radians (chloroplasts; the division axis for nuclei). */
   orient: number;
   tint: Rgb;
-  /** Food vacuoles: undigested mass left inside. */
+  /**
+   * Progress of a process, 0..1: mitosis for a nucleus, digestion for a food
+   * vacuole.
+   */
+  stage: number;
+  /** Food vacuoles: undigested mass left inside, and how much there was. */
   content: number;
+  content0: number;
+  /** Food vacuoles: the prey cell still visible inside, if any. */
+  cell: Cell | null;
+  /** Radius the prey had when it was swallowed. */
+  cellR0: number;
+  /** Residue on its way out of the cell. */
+  egest: boolean;
+  /** During division: which daughter (+1 or -1 along the axis) this goes to. */
+  side: number;
 }
 
 interface Pseudopod {
@@ -51,6 +67,8 @@ export const enum CellState {
   Dying = 2,
   /** Finished: eaten or dissolved, to be removed from the world. */
   Gone = 3,
+  /** Swallowed: sitting in a predator's food vacuole, being digested. */
+  Ingested = 4,
 }
 
 interface SpeciesTraits {
@@ -92,7 +110,7 @@ const TRAITS: Record<Species, SpeciesTraits> = {
     growth: 0.01,
     photosynthesis: 0,
     divideAt: 1.42,
-    divideSeconds: 14,
+    divideSeconds: 28,
     dieBelow: 0.85,
     dieSeconds: 10,
   },
@@ -108,7 +126,7 @@ const TRAITS: Record<Species, SpeciesTraits> = {
     growth: 0.012,
     photosynthesis: 0.02,
     divideAt: 1.42,
-    divideSeconds: 8,
+    divideSeconds: 14,
     dieBelow: 0.75,
     dieSeconds: 6,
   },
@@ -120,6 +138,8 @@ export const NODES = 48;
 export const MAX_ORGANELLES = 16;
 /** Half-saturation constant for nutrient uptake, in mass units per grid cell. */
 const NUTRIENT_K = 1500;
+/** Colour of indigestible leftovers. */
+const RESIDUE: Rgb = [0.52, 0.42, 0.3];
 
 const TAU = Math.PI * 2;
 /** Unit directions of the membrane samples. */
@@ -176,7 +196,13 @@ export class Cell {
   /** Seconds into dividing or dying. */
   private stateTime = 0;
   private divideAxis = 0;
-  private nucleusSplit = false;
+  private duplicated = false;
+  /** The nucleus has finished dividing into two. */
+  private nucleiSplit = false;
+  /** 0..1, how far this cell has been digested (only while Ingested). */
+  digestion = 0;
+  /** Residue pushed out of the cell since the world last looked: positions and mass. */
+  readonly expelled: { x: number; y: number; r: number; mass: number }[] = [];
   /** 0..1, how much of the cell is still visible (fades while dissolving). */
   visibility = 1;
 
@@ -245,10 +271,17 @@ export class Cell {
       ry: Math.sin(a) * d,
       r: size * this.radius,
       size,
+      grow: 1,
       phase: rng.range(0, 10),
       orient: rng.range(0, TAU),
       tint,
+      stage: 0,
       content,
+      content0: content,
+      cell: null,
+      cellR0: 0,
+      egest: false,
+      side: 0,
     };
     this.organelles.push(o);
     return o;
@@ -263,6 +296,7 @@ export class Cell {
       const foods = rng.int(1, 3);
       for (let i = 0; i < foods; i++) {
         const f = this.addOrganelle(rng, OrganelleKind.FoodVacuole, 0.1, 0.6, foodTint(rng), this.mass * 0.03);
+        f.content0 = f.content * rng.range(1.2, 3);
         f.size = this.vacuoleSize(f.content);
       }
       const drops = rng.int(4, 8);
@@ -285,19 +319,22 @@ export class Cell {
 
   step(dt: number, ctx: StepContext): void {
     this.time += dt;
-    this.updateDepth(dt, ctx.rng);
     if (this.capturedBy) {
-      // Being engulfed: held still while the predator wraps around it.
+      // Being engulfed or digested: the predator moves it; it sits just above
+      // the predator in the film so it is drawn inside its vacuole.
+      this.z = this.capturedBy.z + 0.001;
+      this.visibility = (1 - 0.4 * this.digestion) * this.capturedBy.visibility;
       this.updateOrganelles(dt);
       return;
     }
+    this.updateDepth(dt, ctx.rng);
     if (this.state === CellState.Dying) {
       this.dissolve(dt);
       return;
     }
     this.metabolise(dt, ctx.nutrients);
     if (this.state === CellState.Dividing) {
-      this.divide(dt);
+      this.divide(dt, ctx.rng);
     } else {
       if (this.traits.motile) {
         this.updatePods(dt, ctx.rng);
@@ -329,16 +366,35 @@ export class Cell {
       this.energy += nutrients.take(this.cx, this.cy, want);
     }
 
-    // Digest food vacuoles: they shrink as their content becomes energy.
-    for (let i = this.organelles.length - 1; i >= 0; i--) {
-      const o = this.organelles[i];
-      if (o.kind !== OrganelleKind.FoodVacuole) continue;
-      const digested = Math.min(o.content, (o.content * 0.02 + mass * 0.0002) * dt);
+    // Digest food vacuoles. A freshly swallowed cell sits in a bubble of water;
+    // the vacuole then tightens around it while it shrinks and browns, and
+    // what can't be digested is left as a small residue to be expelled.
+    for (const o of this.organelles) {
+      if (o.kind !== OrganelleKind.FoodVacuole || o.egest) continue;
+      const digested = Math.min(o.content, (o.content * 0.015 + o.content0 * 0.0015) * dt);
       o.content -= digested;
       this.energy += digested * 0.8;
       nutrients.add(this.cx, this.cy, digested * 0.2);
-      o.size = this.vacuoleSize(o.content);
-      if (o.content <= 0.5) this.organelles.splice(i, 1);
+      const left = o.content / o.content0;
+      o.stage = 1 - left;
+      const prey = o.cell;
+      if (prey) {
+        prey.digestion = o.stage;
+        prey.shrinkTo(o.cellR0 * Math.sqrt(Math.max(left, 0.04)));
+        // A bubble of water around the prey at first, tight later.
+        const water = Math.max(0, 1 - o.phase / 25);
+        o.size = (prey.radius * (1.06 + 0.14 * water) + 2) / this.radius;
+        if (left < 0.25) {
+          // Nothing recognisable left: the prey's remains become residue.
+          prey.state = CellState.Gone;
+          prey.capturedBy = null;
+          o.cell = null;
+          o.tint = RESIDUE;
+        }
+      } else {
+        o.size = this.vacuoleSize(o.content);
+        if (left < 0.12 || o.content < 1) o.egest = true;
+      }
     }
 
     if (this.state !== CellState.Alive) return;
@@ -367,6 +423,19 @@ export class Cell {
     this.radius = Math.sqrt(mass / Math.PI);
   }
 
+  /** Shrink the whole outline to a new rest radius (a cell being digested). */
+  shrinkTo(radius: number): void {
+    const k = radius / this.radius;
+    if (k >= 1) return;
+    for (let i = 0; i < NODES; i++) this.rs[i] *= k;
+    for (const o of this.organelles) {
+      o.ox *= k;
+      o.oy *= k;
+    }
+    this.radius = radius;
+    this.updateOutline();
+  }
+
   /** Ready to divide (the world decides whether there is room). */
   get wantsToDivide(): boolean {
     return (
@@ -386,66 +455,129 @@ export class Cell {
     this.state = CellState.Dividing;
     this.stateTime = 0;
     this.divideAxis = this.traits.motile ? this.heading + rng.gauss() * 0.4 : rng.range(0, TAU);
-    this.nucleusSplit = false;
+    this.duplicated = false;
+    this.nucleiSplit = false;
     this.pods.length = 0;
     this.target = null;
+    const ax = Math.cos(this.divideAxis);
+    const ay = Math.sin(this.divideAxis);
+    for (const o of this.organelles) o.side = o.ox * ax + o.oy * ay >= 0 ? 1 : -1;
   }
 
   get divisionDone(): boolean {
     return this.state === CellState.Dividing && this.stateTime >= this.traits.divideSeconds;
   }
 
-  /** Daughter radius, separation of the two lobes, and lobe radius at division progress p. */
+  /** Separation of the two lobes and lobe radius at division progress p (cytokinesis). */
   private divisionShape(p: number): { d: number; rho: number } {
     const rc = this.radius / Math.SQRT2;
-    const s = smoothstep(0.15, 1, p);
+    const s = smoothstep(0.6, 1, p);
     return { d: s * rc * 0.92, rho: this.radius + (rc - this.radius) * s };
   }
 
   /**
-   * Mitosis: the nucleus splits, the cell stretches along the division axis
-   * and pinches in at the waist until it is two lobes about to separate.
+   * Binary fission, in the order a cell really does it:
+   * 1. pseudopods retract and the cell rounds up;
+   * 2. the nucleus divides (chromatin condenses, lines up, pulls apart into
+   *    two nuclei) while the other organelles are duplicated;
+   * 3. the halves gather at opposite poles and the body pinches in at the
+   *    waist (cytokinesis) until two daughters separate.
    */
-  private divide(dt: number): void {
+  private divide(dt: number, rng: Rng): void {
     this.stateTime += dt;
     const p = Math.min(1, this.stateTime / this.traits.divideSeconds);
     const { d, rho } = this.divisionShape(p);
     const ax = Math.cos(this.divideAxis);
     const ay = Math.sin(this.divideAxis);
-    const k = Math.min(1, dt * 2.5);
+
+    // Body: pseudopods melt back into a round cell, which later stretches into two lobes.
+    const k = Math.min(1, dt * 0.7);
     for (let i = 0; i < NODES; i++) {
-      const ux = COS[i];
-      const uy = SIN[i];
+      const along = COS[i] * ax + SIN[i] * ay;
       // Far intersection of this ray with either lobe circle (centres ±d along the axis).
-      const along = ux * ax + uy * ay;
       const reach = (c: number) => c * along + Math.sqrt(Math.max(0, c * c * along * along - c * c + rho * rho));
       const target = Math.max(reach(d), reach(-d));
       this.rs[i] += (target - this.rs[i]) * k;
     }
 
-    if (!this.nucleusSplit && p > 0.2) {
-      this.nucleusSplit = true;
-      const n = this.organelles.find((o) => o.kind === OrganelleKind.Nucleus);
-      if (n && this.organelles.length < MAX_ORGANELLES) {
-        const twin = { ...n };
-        n.size *= 0.85;
-        twin.size = n.size;
-        this.organelles.push(twin);
-        // Send the two nuclei to opposite lobes.
-        n.ox += ax * 2;
-        n.oy += ay * 2;
-        twin.ox -= ax * 2;
-        twin.oy -= ay * 2;
+    // Nucleus: mitosis, drawn by the shader from its stage and axis.
+    const mitosis = smoothstep(0.1, 0.6, p);
+    for (let i = this.organelles.length - 1; i >= 0 && !this.nucleiSplit; i--) {
+      const n = this.organelles[i];
+      if (n.kind !== OrganelleKind.Nucleus) continue;
+      n.orient = this.divideAxis;
+      n.stage = mitosis;
+      if (mitosis >= 1) {
+        this.nucleiSplit = true;
+        // Telophase done: two daughter nuclei where the shader drew them.
+        const off = n.r * 1.1;
+        const twin: Organelle = { ...n, stage: 0, size: n.size * 0.82, side: -1 };
+        n.stage = 0;
+        n.size *= 0.82;
+        n.side = 1;
+        twin.ox = n.ox - ax * off;
+        twin.oy = n.oy - ay * off;
+        n.ox += ax * off;
+        n.oy += ay * off;
+        // Nuclei go first so they are never the ones dropped for space.
+        if (this.organelles.length >= MAX_ORGANELLES) {
+          const drop = this.organelles.findIndex((o) => o.kind === OrganelleKind.Droplet);
+          if (drop >= 0) this.organelles.splice(drop, 1);
+        }
+        this.organelles.unshift(twin);
       }
     }
-    // Organelles gather into the lobe on their side, keeping their spread.
-    const k2 = Math.min(1, dt * 0.4);
+
+    // Duplicate the other organelles once the nucleus is dividing.
+    if (!this.duplicated && p > 0.3) {
+      this.duplicated = true;
+      this.duplicateOrganelles(rng, ax, ay);
+    }
+
+    // Halves gather toward their poles, then into the lobes.
+    const pole = Math.max(d, this.radius * 0.35 * smoothstep(0.35, 0.6, p));
+    const k2 = Math.min(1, dt * 0.5);
     for (const o of this.organelles) {
-      const side = o.ox * ax + o.oy * ay >= 0 ? 1 : -1;
-      const tx = ax * side * d + o.rx * rho * 0.6;
-      const ty = ay * side * d + o.ry * rho * 0.6;
+      if (o.side === 0) continue;
+      const along = o.rx * ax + o.ry * ay;
+      const px = (o.rx - ax * along) * rho * 0.55;
+      const py = (o.ry - ay * along) * rho * 0.55;
+      const lobeSpread = smoothstep(0.3, 0.6, p);
+      const tx = ax * o.side * pole + px * lobeSpread + o.rx * rho * 0.5 * (1 - lobeSpread);
+      const ty = ay * o.side * pole + py * lobeSpread + o.ry * rho * 0.5 * (1 - lobeSpread);
       o.ox += (tx - o.ox) * k2;
       o.oy += (ty - o.oy) * k2;
+    }
+  }
+
+  /** Each organelle gets a twin that grows in on the opposite side of the cell. */
+  private duplicateOrganelles(rng: Rng, ax: number, ay: number): void {
+    const copies: Organelle[] = [];
+    let droplets = 0;
+    for (const o of this.organelles) {
+      const copyable =
+        o.kind === OrganelleKind.ContractileVacuole ||
+        o.kind === OrganelleKind.Chloroplast ||
+        (o.kind === OrganelleKind.Droplet && droplets++ < 3);
+      if (!copyable) continue;
+      // Mirror across the plane between the daughters.
+      const along = o.ox * ax + o.oy * ay;
+      const twin: Organelle = {
+        ...o,
+        ox: o.ox - 2 * along * ax,
+        oy: o.oy - 2 * along * ay,
+        rx: o.rx - 2 * (o.rx * ax + o.ry * ay) * ax,
+        ry: o.ry - 2 * (o.rx * ax + o.ry * ay) * ay,
+        side: -o.side,
+        grow: 0,
+        phase: rng.range(0, 10),
+        orient: o.kind === OrganelleKind.Chloroplast ? o.orient + Math.PI : o.orient,
+      };
+      copies.push(twin);
+    }
+    for (const c of copies) {
+      if (this.organelles.length >= MAX_ORGANELLES) break;
+      this.organelles.push(c);
     }
   }
 
@@ -470,9 +602,18 @@ export class Cell {
     const a = make(1);
     const b = make(-1);
     for (const o of this.organelles) {
-      const side = o.ox * ax + o.oy * ay >= 0 ? 1 : -1;
+      const side = o.side !== 0 ? o.side : o.ox * ax + o.oy * ay >= 0 ? 1 : -1;
       const child = side > 0 ? a : b;
-      if (child.organelles.length >= MAX_ORGANELLES) continue;
+      if (child.organelles.length >= MAX_ORGANELLES) {
+        // No room: whatever was inside is digested on the spot.
+        if (o.cell) {
+          o.cell.state = CellState.Gone;
+          o.cell.capturedBy = null;
+          child.energy += o.content * 0.8;
+        }
+        continue;
+      }
+      if (o.cell) o.cell.capturedBy = child;
       const ox = o.ox - ax * d * side;
       const oy = o.oy - ay * d * side;
       const restScale = 0.7;
@@ -482,7 +623,9 @@ export class Cell {
         oy,
         rx: (ox / rc) * restScale,
         ry: (oy / rc) * restScale,
-        size: o.kind === OrganelleKind.Nucleus || o.kind === OrganelleKind.Chloroplast ? o.size / 0.85 : o.size,
+        size: o.kind === OrganelleKind.Nucleus ? o.size / 0.82 : o.size,
+        side: 0,
+        stage: o.kind === OrganelleKind.Nucleus ? 0 : o.stage,
       });
     }
     // Every daughter needs a nucleus (and every alga a chloroplast).
@@ -540,6 +683,8 @@ export class Cell {
     prey.target = null;
     prey.capturedBy = this;
     prey.pods.length = 0;
+    // The cell stops crawling and wraps around its catch.
+    this.pods.length = 0;
   }
 
   /** Let go of prey (when this cell dies or divides). */
@@ -548,65 +693,108 @@ export class Cell {
     this.prey = null;
   }
 
+  /** Radius of the pocket of water kept around prey while it is engulfed. */
+  private pocketRadius(prey: Cell): number {
+    return prey.radius * 1.2 + 2;
+  }
+
   /**
-   * Phagocytosis: pseudopods flow around the prey and close over it, then the
-   * prey is drawn inward and sealed into a food vacuole.
+   * Phagocytosis. The membrane never touches the prey: the front of the cell
+   * hollows into a cup around it, two arms flow along its sides and on around
+   * the far side until they meet, and the prey ends up sealed in a pocket of
+   * water, the new food vacuole.
    */
   private engulf(dt: number): void {
     const prey = this.prey!;
     this.engulfTime += dt;
+    const t = this.engulfTime;
     const dx = prey.cx - this.cx;
     const dy = prey.cy - this.cy;
     const dist = Math.hypot(dx, dy) || 1;
     const ang = Math.atan2(dy, dx);
-    const halfWidth = Math.asin(Math.min(1, (prey.radius * 1.3) / dist)) + 0.2;
-    const wrap = smoothstep(0, 3, this.engulfTime);
+    const H = this.pocketRadius(prey);
+    const arm = Math.max(5, prey.radius * 0.55);
+    const outer = H + arm;
+    // Rays from the centre that pass through the pocket; the arms close over
+    // them from both sides inward, so the opening on the far side narrows.
+    const hitHalf = Math.asin(Math.min(1, H / dist));
+    const close = smoothstep(2.5, 8, t);
+    const open = hitHalf * (1 - close);
+    const k = Math.min(1, dt * 5);
+    let sealed = true;
     for (let i = 0; i < NODES; i++) {
       const a = angleDiff((i / NODES) * TAU, ang);
-      if (Math.abs(a) > halfWidth) continue;
-      const fall = 1 - Math.abs(a) / halfWidth;
-      const want = (dist * Math.cos(a) + prey.radius * 1.25 + 4) * wrap;
-      if (this.rs[i] < want) this.rs[i] += (want - this.rs[i]) * Math.min(1, dt * 2.5 * fall);
+      if (Math.abs(a) > Math.PI / 2) continue;
+      const s = dist * Math.abs(Math.sin(a));
+      if (s >= outer) continue;
+      const c = dist * Math.cos(a);
+      const r = this.rs[i];
+      if (s < H && Math.abs(a) < open) {
+        // Bottom of the cup: hug the pocket without crossing it.
+        const near = c - Math.sqrt(H * H - s * s);
+        const far = c + Math.sqrt(H * H - s * s);
+        if (r < near) this.rs[i] += (near - r) * k;
+        else if (r > (near + far) / 2) this.rs[i] = (near + far) / 2;
+        if (s < H * 0.9) sealed = false;
+        continue;
+      }
+      // An arm: reach round the far side of the pocket.
+      const want = c + Math.sqrt(outer * outer - s * s);
+      if (r < want) this.rs[i] += (want - r) * k;
+      if (s < H && this.rs[i] < c + Math.sqrt(H * H - s * s) + arm * 0.4) sealed = false;
     }
-    // Draw the prey in once it is enclosed.
-    if (this.engulfTime > 2) {
-      const pull = Math.min(dist, this.radius * 0.12 * dt);
-      prey.cx -= (dx / dist) * pull;
-      prey.cy -= (dy / dist) * pull;
-      prey.updateOutline();
+    if ((sealed && t > 8) || t > 16 || dist < H + this.radius * 0.25) this.ingest(prey, dx, dy);
+  }
+
+  /** The pocket around prey being engulfed, which the renderer keeps clear of cytoplasm. */
+  get pocket(): { x: number; y: number; r: number } | null {
+    if (this.prey) return { x: this.prey.cx, y: this.prey.cy, r: this.pocketRadius(this.prey) };
+    for (const o of this.organelles) {
+      if (o.cell) return { x: this.cx + o.ox, y: this.cy + o.oy, r: o.r };
     }
-    const inside = dist + prey.radius < this.radiusAt(ang) - 3;
-    if (inside && this.engulfTime > 4) this.ingest(prey, dx, dy);
+    return null;
   }
 
   private ingest(prey: Cell, dx: number, dy: number): void {
-    const content = prey.mass + prey.energy;
+    const content = prey.mass + Math.max(0, prey.energy);
+    prey.state = CellState.Ingested;
+    prey.eaten = true;
+    prey.target = null;
+    this.prey = null;
     if (this.organelles.length >= MAX_ORGANELLES) {
       const drop = this.organelles.findIndex((o) => o.kind === OrganelleKind.Droplet);
       if (drop >= 0) this.organelles.splice(drop, 1);
     }
-    if (this.organelles.length < MAX_ORGANELLES) {
-      const vac: Organelle = {
-        kind: OrganelleKind.FoodVacuole,
-        ox: dx,
-        oy: dy,
-        rx: (dx / this.radius) * 0.5,
-        ry: (dy / this.radius) * 0.5,
-        r: prey.radius,
-        size: prey.radius / this.radius,
-        phase: 0,
-        orient: 0,
-        tint: prey.species === Species.Alga ? chloroplastTint(prey.tint.hue) : prey.tint.body,
-        content,
-      };
-      this.organelles.push(vac);
-    } else {
+    if (this.organelles.length >= MAX_ORGANELLES) {
       this.energy += content * 0.8;
+      prey.state = CellState.Gone;
+      prey.capturedBy = null;
+      return;
     }
-    prey.state = CellState.Gone;
-    prey.eaten = true;
-    prey.capturedBy = null;
-    this.prey = null;
+    const R = this.radius;
+    const H = this.pocketRadius(prey);
+    this.organelles.push({
+      kind: OrganelleKind.FoodVacuole,
+      ox: dx,
+      oy: dy,
+      // It is carried in toward the middle of the cell.
+      rx: (dx / R) * 0.35,
+      ry: (dy / R) * 0.35,
+      r: H,
+      size: H / R,
+      grow: 1,
+      phase: 0,
+      orient: 0,
+      tint: prey.species === Species.Alga ? chloroplastTint(prey.tint.hue) : prey.tint.body,
+      stage: 0,
+      content,
+      content0: content,
+      cell: prey,
+      cellR0: prey.radius,
+      egest: false,
+      side: 0,
+    });
+    prey.capturedBy = this;
   }
 
   // --- Movement -------------------------------------------------------------
@@ -813,17 +1001,25 @@ export class Cell {
     }
     const dividing = this.state === CellState.Dividing;
     const jiggle = this.traits.motile ? 0.05 : 0.015;
+    // Residue leaves through the trailing end.
+    const rearX = -Math.cos(this.heading) * R;
+    const rearY = -Math.sin(this.heading) * R;
     const orgs = this.organelles;
     for (let i = 0; i < orgs.length; i++) {
       const o = orgs[i];
       o.phase += dt;
-      o.r = o.size * R;
+      o.grow = Math.min(1, o.grow + dt * 0.25);
+      o.r = o.size * R * o.grow;
       let vx = 0;
       let vy = 0;
-      if (!dividing) {
+      if (o.egest) {
+        vx += (rearX - o.ox) * 0.3;
+        vy += (rearY - o.oy) * 0.3;
+      } else if (!dividing) {
         const stream = o.kind === OrganelleKind.Nucleus ? 0.01 : 0.025;
-        vx += (o.rx * R - o.ox) * 0.25 + sx * stream * R;
-        vy += (o.ry * R - o.oy) * 0.25 + sy * stream * R;
+        const pull = o.cell ? 0.12 : 0.25;
+        vx += (o.rx * R - o.ox) * pull + sx * stream * R;
+        vy += (o.ry * R - o.oy) * pull + sy * stream * R;
       }
       vx += noise1(o.phase * 0.3, this.seed + i * 17) * jiggle * R;
       vy += noise1(o.phase * 0.3 + 50, this.seed + i * 17) * jiggle * R;
@@ -838,8 +1034,10 @@ export class Cell {
           const d = Math.hypot(dx, dy) || 0.01;
           const overlap = o.r + q.r + 2 - d;
           if (overlap > 0) {
-            vx += (dx / d) * overlap * 1.5;
-            vy += (dy / d) * overlap * 1.5;
+            // A vacuole holding a whole cell is heavy and moves less.
+            const give = o.cell ? 1 : 1.5;
+            vx += (dx / d) * overlap * give;
+            vy += (dy / d) * overlap * give;
           }
         }
       }
@@ -855,11 +1053,34 @@ export class Cell {
 
       // Stay inside the membrane, clear of the hyaline rim.
       const d = Math.hypot(o.ox, o.oy);
-      const rim = this.traits.motile ? 0.14 : 0.08;
-      const limit = Math.max(0, this.radiusAt(Math.atan2(o.oy, o.ox)) - o.r - R * rim);
+      const edge = this.radiusAt(Math.atan2(o.oy, o.ox));
+      if (o.egest) {
+        if (d + o.r > edge - 2) {
+          // Out through the membrane: the residue joins the debris in the water.
+          const k = (edge + o.r + 2) / (d || 1);
+          this.expelled.push({ x: this.cx + o.ox * k, y: this.cy + o.oy * k, r: o.r * 0.6, mass: o.content });
+          orgs.splice(i, 1);
+          i--;
+        }
+        continue;
+      }
+      const rim = o.cell ? 3 / R : this.traits.motile ? 0.14 : 0.08;
+      const limit = Math.max(0, edge - o.r - R * rim);
       if (d > limit && d > 0) {
-        o.ox *= limit / d;
-        o.oy *= limit / d;
+        // A fresh vacuole is drawn in gently rather than snapped inside.
+        const k = o.cell ? Math.min(1, dt * 2) : 1;
+        const to = d + (limit - d) * k;
+        o.ox *= to / d;
+        o.oy *= to / d;
+      }
+
+      const prey = o.cell;
+      if (prey) {
+        // The prey stays alive for a while, twitching against the vacuole wall.
+        const room = Math.max(0, o.r - prey.radius - 1) * (1 - Math.min(1, prey.digestion * 2));
+        prey.cx = this.cx + o.ox + noise1(o.phase * 0.5, prey.seed) * room;
+        prey.cy = this.cy + o.oy + noise1(o.phase * 0.5 + 30, prey.seed) * room;
+        prey.updateOutline();
       }
     }
   }

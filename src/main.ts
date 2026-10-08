@@ -24,6 +24,8 @@ if (!gl) {
 function start(gl: WebGL2RenderingContext): void {
   const renderer = new Renderer(gl, seed);
   const world = new World(seed, window.innerWidth, window.innerHeight);
+  // Everything in focus, for close inspection.
+  world.sharp = params.has('sharp');
   for (let t = 0; t < warmup; t += SIM_DT) world.step(SIM_DT);
 
   // Lowered automatically if frames run slow.

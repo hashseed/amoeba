@@ -12,9 +12,11 @@ import postFrag from './shaders/post.frag?raw';
 
 /** Membrane points per cell after smoothing; must match cell.frag. */
 const POINTS = 64;
-const ROW_TEXELS = POINTS / 2 + MAX_ORGANELLES * 2;
+const ROW_TEXELS = POINTS / 2 + MAX_ORGANELLES * 3;
 const MAX_CELLS = 128;
-const CELL_FLOATS = 24;
+const CELL_FLOATS = 28;
+/** Colour a cell fades toward as it is digested. */
+const DIGESTED = [0.5, 0.4, 0.28];
 const SPECK_FLOATS = 6;
 
 const withCommon = (src: string) => src.replace('#include "common.glsl"', common);
@@ -51,7 +53,7 @@ export class Renderer {
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
 
     const cellProg = compile(gl, cellVert, withCommon(cellFrag));
-    this.cell = { prog: cellProg, u: uniforms(gl, cellProg), ...this.instanced(quad, [4, 4, 4, 4, 4, 4]) };
+    this.cell = { prog: cellProg, u: uniforms(gl, cellProg), ...this.instanced(quad, [4, 4, 4, 4, 4, 4, 4]) };
     const speckProg = compile(gl, speckVert, speckFrag);
     this.speck = { prog: speckProg, u: uniforms(gl, speckProg), ...this.instanced(quad, [4, 2]) };
 
@@ -169,7 +171,11 @@ export class Renderer {
       const contrast = c.visibility / (1 + blur * 0.04);
       const margin = c.radius * 0.7 + blur * 3 + 4;
       const b = c.bounds();
-      const { body, ink, glow } = c.tint;
+      // A cell being digested loses its colour to a dull brown.
+      const dg = c.digestion * 0.85;
+      const tone = (v: readonly number[]) => v.map((x, i) => x + (DIGESTED[i] - x) * dg);
+      const [body, ink, glow] = [tone(c.tint.body), tone(c.tint.ink), tone(c.tint.glow)];
+      const pocket = c.pocket;
       inst.set(
         [
           b.x0 - margin, b.y0 - margin, b.x1 + margin, b.y1 + margin,
@@ -177,7 +183,8 @@ export class Renderer {
           ink[0], ink[1], ink[2], contrast,
           glow[0], glow[1], glow[2], (c.seed % 997) / 997,
           row, c.organelles.length, c.cx, c.cy,
-          c.radius, c.traits.wall, 0, 0,
+          c.radius, c.traits.wall, c.digestion, 0,
+          pocket ? pocket.x : 0, pocket ? pocket.y : 0, pocket ? pocket.r : 0, 0,
         ],
         o,
       );
@@ -218,18 +225,26 @@ export class Renderer {
     for (let k = 0; k < MAX_ORGANELLES; k++) {
       const org = c.organelles[k];
       if (!org) {
-        o += 8;
+        o += 12;
         continue;
       }
       d[o++] = c.cx + org.ox;
       d[o++] = c.cy + org.oy;
       d[o++] = org.r;
       // Kind in the integer part, orientation (fraction of a turn) in the fraction.
-      d[o++] = org.kind + (((org.orient / (Math.PI * 2)) % 1) + 1) % 1 * 0.999;
+      // A vacuole with a whole cell in it is drawn as kind 5, a clear pocket.
+      const kind = org.cell ? 5 : org.kind;
+      d[o++] = kind + (((org.orient / (Math.PI * 2)) % 1) + 1) % 1 * 0.999;
       d[o++] = org.phase;
-      d[o++] = org.tint[0];
-      d[o++] = org.tint[1];
-      d[o++] = org.tint[2];
+      // Pigments break down first as a swallowed cell is digested.
+      const dg = Math.min(1, c.digestion * 1.3);
+      d[o++] = org.tint[0] + (DIGESTED[0] - org.tint[0]) * dg;
+      d[o++] = org.tint[1] + (DIGESTED[1] - org.tint[1]) * dg;
+      d[o++] = org.tint[2] + (DIGESTED[2] - org.tint[2]) * dg;
+      d[o++] = org.stage;
+      d[o++] = org.grow;
+      d[o++] = 0;
+      d[o++] = 0;
     }
   }
 }
