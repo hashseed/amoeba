@@ -699,51 +699,72 @@ export class Cell {
   }
 
   /**
-   * Phagocytosis. The membrane never touches the prey: the front of the cell
-   * hollows into a cup around it, two arms flow along its sides and on around
-   * the far side until they meet, and the prey ends up sealed in a pocket of
-   * water, the new food vacuole.
+   * Phagocytosis. The membrane never touches the prey: the whole front of the
+   * cell flows forward around it as two broad lobes (the food cup), which
+   * close behind it, and the prey ends up sealed in a pocket of water, the new
+   * food vacuole. The cup's outline is the convex hull of the body and a
+   * thick ring around the pocket, so the lobes blend smoothly into the body.
    */
   private engulf(dt: number): void {
     const prey = this.prey!;
     this.engulfTime += dt;
     const t = this.engulfTime;
-    const dx = prey.cx - this.cx;
-    const dy = prey.cy - this.cy;
-    const dist = Math.hypot(dx, dy) || 1;
-    const ang = Math.atan2(dy, dx);
+    let dx = prey.cx - this.cx;
+    let dy = prey.cy - this.cy;
+    let dist = Math.hypot(dx, dy) || 1;
     const H = this.pocketRadius(prey);
-    const arm = Math.max(5, prey.radius * 0.55);
+    const R0 = this.radius * 0.9;
+    // The body streams into the cup, so it deepens around the prey.
+    const advance = dist - (H + R0 * 0.55);
+    if (advance > 0) {
+      const step = Math.min(advance, this.radius * 0.06 * dt);
+      this.shiftCentre((dx / dist) * step, (dy / dist) * step);
+      dx = prey.cx - this.cx;
+      dy = prey.cy - this.cy;
+      dist = Math.hypot(dx, dy) || 1;
+    }
+    const ang = Math.atan2(dy, dx);
+    // Lobes as thick as a good fraction of the body, growing as they extend.
+    const reach = smoothstep(0, 3, t);
+    const arm = Math.max(6, H * 0.5 + this.radius * 0.18) * (0.4 + 0.6 * reach);
     const outer = H + arm;
-    // Rays from the centre that pass through the pocket; the arms close over
-    // them from both sides inward, so the opening on the far side narrows.
+    // Hull of the body circle (R0 at the centre) and the ring (outer at dist):
+    // external tangent at angle phi from the axis, touching the ring at angle a1.
+    const cphi = clamp((R0 - outer) / dist, -1, 1);
+    const phi = Math.acos(cphi);
+    const tx = dist + outer * cphi;
+    const ty = outer * Math.sin(phi);
+    const a1 = Math.atan2(ty, tx);
+    // Rays through the pocket; the lobes close over them from both sides
+    // inward, so the opening on the far side narrows to nothing.
     const hitHalf = Math.asin(Math.min(1, H / dist));
-    const close = smoothstep(2.5, 8, t);
+    const close = smoothstep(2.5, 9, t);
     const open = hitHalf * (1 - close);
-    const k = Math.min(1, dt * 5);
+    const k = Math.min(1, dt * 2);
     let sealed = true;
     for (let i = 0; i < NODES; i++) {
       const a = angleDiff((i / NODES) * TAU, ang);
-      if (Math.abs(a) > Math.PI / 2) continue;
-      const s = dist * Math.abs(Math.sin(a));
-      if (s >= outer) continue;
+      const abs = Math.abs(a);
+      if (abs > phi) continue;
+      const sn = dist * Math.sin(abs);
       const c = dist * Math.cos(a);
       const r = this.rs[i];
-      if (s < H && Math.abs(a) < open) {
+      if (sn < H && abs < open) {
         // Bottom of the cup: hug the pocket without crossing it.
-        const near = c - Math.sqrt(H * H - s * s);
-        const far = c + Math.sqrt(H * H - s * s);
+        const half = Math.sqrt(H * H - sn * sn);
+        const near = c - half;
         if (r < near) this.rs[i] += (near - r) * k;
-        else if (r > (near + far) / 2) this.rs[i] = (near + far) / 2;
-        if (s < H * 0.9) sealed = false;
+        else if (r > c) this.rs[i] = c;
+        if (sn < H * 0.9) sealed = false;
         continue;
       }
-      // An arm: reach round the far side of the pocket.
-      const want = c + Math.sqrt(outer * outer - s * s);
+      // A lobe: out to the hull, round the far side of the pocket.
+      const want =
+        abs < a1 && sn < outer ? c + Math.sqrt(outer * outer - sn * sn) : R0 / Math.max(0.05, Math.cos(phi - abs));
       if (r < want) this.rs[i] += (want - r) * k;
-      if (s < H && this.rs[i] < c + Math.sqrt(H * H - s * s) + arm * 0.4) sealed = false;
+      if (sn < H && this.rs[i] < c + Math.sqrt(H * H - sn * sn) + arm * 0.35) sealed = false;
     }
-    if ((sealed && t > 8) || t > 16 || dist < H + this.radius * 0.25) this.ingest(prey, dx, dy);
+    if ((sealed && t > 9) || t > 18 || dist < H + this.radius * 0.2) this.ingest(prey, dx, dy);
   }
 
   /** The pocket around prey being engulfed, which the renderer keeps clear of cytoplasm. */
