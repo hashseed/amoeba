@@ -142,7 +142,8 @@ void main() {
     vec4 B = texelFetch(u_data, ivec2(ORGANELLE_BASE + 2 * k + 1, row), 0);
     vec2 oc = A.xy;
     float r = A.z;
-    int kind = int(A.w + 0.5);
+    int kind = int(floor(A.w));
+    float orient = fract(A.w) * 6.2831853;
     float ph = B.x;
     vec3 otint = B.yzw;
 
@@ -179,12 +180,31 @@ void main() {
       over(acc, otint, fill(sm, 1.2) * 0.5);
       over(acc, otint * 0.6, line(sm, 0.8) * 0.4 * sharp);
       over(acc, ink, line(so, 0.8) * 0.4);
+    } else if (kind == 4) {
+      // Chloroplast: a cup-shaped green plastid with fine stacked lamellae and
+      // a bright pyrenoid tucked in its hollow.
+      vec2 dir = vec2(cos(orient), sin(orient));
+      float outer = length(d) - r;
+      float hollow = length(d + dir * r * 0.7) - r * 0.68;
+      float cup = max(outer, -hollow);
+      float body = fill(cup, 1.0);
+      vec2 perp = vec2(-dir.y, dir.x);
+      float lamellae = 0.5 + 0.5 * sin(dot(d, dir) / max(r * 0.07, 1.2) + dot(d, perp) * 0.02);
+      over(acc, otint, body * (0.32 + 0.14 * lamellae * sharp));
+      over(acc, otint * 0.7, line(cup, 0.8) * 0.18);
+      float pyr = length(d + dir * r * 0.1) - r * 0.2;
+      over(acc, vec3(1.0), fill(pyr, 1.0) * 0.35);
+      over(acc, otint * 0.6, line(pyr, 0.7) * 0.4 * sharp);
     } else {
       // Lipid droplet: tiny and refractile, bright core with a dark rim.
       over(acc, ink, fill(so, 0.7) * 0.45);
       over(acc, vec3(1.0), fill(so + r * 0.45, 0.6) * 0.8);
     }
   }
+
+  // Algae have a cellulose wall: a second, firmer line just inside the membrane.
+  float wall = v_extra.y;
+  if (wall > 0.0) over(acc, ink, line(sd + 2.4, 0.9) * 0.22 * wall);
 
   // Membrane: a fine tinted line with a faint shadow just inside it.
   over(acc, ink, line(sd + 2.0, 1.4) * 0.14);

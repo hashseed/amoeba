@@ -1,5 +1,5 @@
 import { compile, createTarget, deleteTarget, uniforms, type Target } from '../gl/util';
-import { MAX_ORGANELLES, NODES, type Amoeba } from '../sim/amoeba';
+import { MAX_ORGANELLES, NODES, type Cell } from '../sim/cell';
 import type { Speck, World } from '../sim/world';
 import common from './shaders/common.glsl?raw';
 import fullscreenVert from './shaders/fullscreen.vert?raw';
@@ -166,7 +166,7 @@ export class Renderer {
       this.writeRow(c, row);
       const blur = world.blurAt(c.z);
       // Out of focus, cells lose a little contrast as well as sharpness.
-      const contrast = 1 / (1 + blur * 0.04);
+      const contrast = c.visibility / (1 + blur * 0.04);
       const margin = c.radius * 0.7 + blur * 3 + 4;
       const b = c.bounds();
       const { body, ink, glow } = c.tint;
@@ -177,7 +177,7 @@ export class Renderer {
           ink[0], ink[1], ink[2], contrast,
           glow[0], glow[1], glow[2], (c.seed % 997) / 997,
           row, c.organelles.length, c.cx, c.cy,
-          c.radius, 0, 0, 0,
+          c.radius, c.traits.wall, 0, 0,
         ],
         o,
       );
@@ -200,7 +200,7 @@ export class Renderer {
   }
 
   /** Smooth the membrane ring (Catmull-Rom) into the cell's data row, then append organelles. */
-  private writeRow(c: Amoeba, row: number): void {
+  private writeRow(c: Cell, row: number): void {
     const d = this.data;
     let o = row * ROW_TEXELS * 4;
     const { xs, ys } = c;
@@ -224,7 +224,8 @@ export class Renderer {
       d[o++] = c.cx + org.ox;
       d[o++] = c.cy + org.oy;
       d[o++] = org.r;
-      d[o++] = org.kind;
+      // Kind in the integer part, orientation (fraction of a turn) in the fraction.
+      d[o++] = org.kind + (((org.orient / (Math.PI * 2)) % 1) + 1) % 1 * 0.999;
       d[o++] = org.phase;
       d[o++] = org.tint[0];
       d[o++] = org.tint[1];

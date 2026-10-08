@@ -1,4 +1,5 @@
 import { Renderer } from './render/renderer';
+import { Species } from './sim/cell';
 import { World } from './sim/world';
 
 const SIM_DT = 1 / 60;
@@ -66,7 +67,7 @@ function start(gl: WebGL2RenderingContext): void {
       slowFrames = 0;
       resize();
     }
-    fps?.(dt, quality);
+    fps?.(dt, quality, world);
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
@@ -109,13 +110,17 @@ function setupScreensaverChrome(): void {
   void requestLock();
 }
 
-function createFpsMeter(): (dt: number, quality: number) => void {
+function createFpsMeter(): (dt: number, quality: number, world: World) => void {
   const el = document.createElement('div');
   el.style.cssText = 'position:fixed;top:8px;left:8px;font:12px ui-monospace,monospace;color:#6b5d55;background:#fff8;padding:2px 6px;border-radius:4px';
   document.body.append(el);
   let avg = 1 / 60;
-  return (dt, quality) => {
+  return (dt, quality, world) => {
     avg = avg * 0.95 + dt * 0.05;
-    el.textContent = `${(1 / avg).toFixed(0)} fps · quality ${quality.toFixed(2)} · seed ${seed}`;
+    const s = world.stats;
+    el.textContent =
+      `${(1 / avg).toFixed(0)} fps · quality ${quality.toFixed(2)} · seed ${seed} · ` +
+      `amoebae ${world.count(Species.Amoeba)} · algae ${world.count(Species.Alga)} · ` +
+      `divisions ${s.divisions} · meals ${s.meals} · deaths ${s.deaths}`;
   };
 }
