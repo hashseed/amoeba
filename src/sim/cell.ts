@@ -383,7 +383,8 @@ export class Cell {
         prey.shrinkTo(o.cellR0 * Math.sqrt(Math.max(left, 0.04)));
         // A bubble of water around the prey at first, tight later.
         const water = Math.max(0, 1 - o.phase / 25);
-        o.size = (prey.radius * (1.06 + 0.14 * water) + 2) / this.radius;
+        const snug = prey.species === Species.Alga ? prey.radius + 1.5 : prey.radius * (1.06 + 0.14 * water) + 2;
+        o.size = snug / this.radius;
         if (left < 0.25) {
           // Nothing recognisable left: the prey's remains become residue.
           prey.state = CellState.Gone;
@@ -695,7 +696,10 @@ export class Cell {
 
   /** Radius of the pocket of water kept around prey while it is engulfed. */
   private pocketRadius(prey: Cell): number {
-    return prey.radius * 1.2 + 2;
+    // Passive prey such as algae is touched and flowed around (circumfluence),
+    // so the membrane hugs it. Prey that can crawl away is surrounded without
+    // contact (circumvallation), which leaves a pocket of water around it.
+    return prey.species === Species.Alga ? prey.radius + 1.5 : prey.radius * 1.2 + 2;
   }
 
   /**
