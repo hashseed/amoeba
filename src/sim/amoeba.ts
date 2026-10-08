@@ -239,7 +239,7 @@ export class Amoeba {
     }
   }
 
-  private updateOutline(): void {
+  updateOutline(): void {
     for (let i = 0; i < NODES; i++) {
       const ang = (i / NODES) * TAU;
       this.xs[i] = this.cx + Math.cos(ang) * this.rs[i];
@@ -306,6 +306,24 @@ export class Amoeba {
         o.oy *= limit / d;
       }
     }
+  }
+
+  /** Push the membrane inward around a direction, where it presses against a neighbour. */
+  dent(angle: number, amount: number): void {
+    const t = ((((angle / TAU) % 1) + 1) % 1) * NODES;
+    const i = Math.floor(t) % NODES;
+    const f = t - Math.floor(t);
+    const j = (i + 1) % NODES;
+    const min = this.radius * 0.3;
+    this.rs[i] = Math.max(min, this.rs[i] - amount * (1 - f));
+    this.rs[j] = Math.max(min, this.rs[j] - amount * f);
+  }
+
+  /** Largest membrane radius, for cheap overlap rejection. */
+  maxRadius(): number {
+    let m = 0;
+    for (let i = 0; i < NODES; i++) m = Math.max(m, this.rs[i]);
+    return m;
   }
 
   /** Move the whole cell, used for gentle separation between neighbours. */

@@ -4,6 +4,7 @@
 - Bright-field look: light background, pastel cells with slightly varying glow tints.
 - Cells are largely transparent, so internal organelles are clearly visible.
 - Focus blur: organisms drift in and out of the focal plane.
+- One plane (2026-10-08): organisms never overlap, and defocus is only slight.
 - Abstract and artsy rather than scientifically literal.
 - WebGL2 renderer for portability.
 - Mouse stirring is deferred to a later milestone; v1 is passive.
@@ -47,7 +48,8 @@ Later candidates: Volvox colonies, Stentor, bioluminescent dinoflagellates that 
 - **Transparency:** cell bodies are mostly clear, so organelles (nucleus, vacuoles, chloroplasts, granules, food being digested) are the main visual interest. Membranes read as thin tinted outlines with a soft halo.
 - **Abstract:** species are inspired by real protists but free in form and colour; patterns and shapes favour beauty over accuracy.
 - **Cells:** membrane drawn as a mesh with a per-vertex "distance to edge" attribute; the fragment shader adds a fresnel rim, soft inner glow, animated noise for cytoplasm granules, nucleus and vacuoles as inner SDFs, and subtle refraction of what lies behind.
-- **Focus blur:** every organism has a continuous depth value that drifts slowly, so cells glide into sharp focus and soften out of it. Rendered as a few depth buckets blurred by distance from the focal plane, plus slow parallax.
+- **One plane:** the drop is a thin film under a cover slip, so organisms share one plane, never pass over each other, and flatten where their membranes press together.
+- **Focus blur:** each organism sits slightly higher or lower in the film and drifts slowly, so blur stays subtle. It is computed analytically in the cell shader from the distance to the focal plane.
 - **Post-processing:** bloom, faint chromatic aberration toward the edges, circular vignette like an eyepiece (toggleable), fine film grain.
 - **Motion:** everything eased and slow; the default time scale aims for something visibly happening every few seconds without bustle.
 
